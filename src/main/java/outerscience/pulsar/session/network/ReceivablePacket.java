@@ -3,26 +3,30 @@ package outerscience.pulsar.session.network;
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 
-import outerscience.pulsar.session.Client;
-
 public abstract class ReceivablePacket extends Packet implements Runnable
 {
+	protected ClientConnection _connection;
+	
 	protected ReceivablePacket()
 	{
+	}
 	
+	public void initialize(int packetId, ClientConnection connection)
+	{
+		_id = packetId;
+		_connection = connection;
 	}
 	
 	@Override
 	public abstract void run();
 	
-	public void initialize(Client client, ByteBuffer buffer)
+	public abstract void readBuffer(ByteBuffer buffer);
+	
+	public ClientConnection getConnection()
 	{
-		_client = client;
-		_buffer = buffer;
+		return _connection;
 	}
 	
-	public abstract void readBuffer();
-
 	public static String readUTFString(ByteBuffer buffer)
 	{
 		short length = buffer.getShort();

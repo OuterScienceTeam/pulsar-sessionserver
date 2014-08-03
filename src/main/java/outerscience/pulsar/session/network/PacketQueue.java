@@ -30,6 +30,18 @@ public class PacketQueue<E>
 		}
 	}
 	
+	public final E first()
+	{
+		try
+		{
+			return list.getFirst();
+		}
+		catch(NoSuchElementException e)
+		{
+			return null;
+		}
+	}
+	
 	/**
 	 * @param element element to be added at the end of the queue 
 	 */

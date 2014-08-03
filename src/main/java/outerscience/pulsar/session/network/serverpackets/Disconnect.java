@@ -2,7 +2,6 @@ package outerscience.pulsar.session.network.serverpackets;
 
 import java.nio.ByteBuffer;
 
-import outerscience.pulsar.session.network.PacketIDs;
 import outerscience.pulsar.session.network.SendablePacket;
 
 /**
@@ -46,7 +45,7 @@ public class Disconnect extends SendablePacket
 	@Override
 	public void write(ByteBuffer buffer)
 	{
-		buffer.put(PacketIDs.DISCONNECT);
+		buffer.put((byte)6);
 		
 		buffer.put(_reason.getCode());
 	}

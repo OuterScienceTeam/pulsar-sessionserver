@@ -3,7 +3,6 @@ package outerscience.pulsar.session;
 import java.io.IOException;
 import java.net.InetSocketAddress;
 import java.net.ServerSocket;
-import java.nio.ByteBuffer;
 import java.nio.channels.SelectionKey;
 import java.nio.channels.Selector;
 import java.nio.channels.ServerSocketChannel;
@@ -13,8 +12,6 @@ import java.util.logging.Level;
 import java.util.logging.Logger;
 
 import outerscience.pulsar.session.network.ClientConnection;
-import outerscience.pulsar.session.network.ReceivablePacket;
-import outerscience.pulsar.session.network.SendablePacket;
 import javolution.util.FastTable;
 
 /**
@@ -31,10 +28,6 @@ public final class ServerThread extends Thread
 	private static final Logger _log = Logger.getLogger(ServerThread.class.getName());
 
 	private static final long SLEEP_TIME = 10;
-
-	private static final int HEADER_SIZE = 2;
-	
-	private static final int MAX_READ_PER_PASS = 5;	
 	
 	private ServerSocket _socket;
 	
@@ -44,23 +37,16 @@ public final class ServerThread extends Thread
 	
 	private ClientManager _clientManager;
 
-	private PacketHandler _packetHandler;
-	
 	private FastTable<ClientConnection> _pendingClose = new FastTable<ClientConnection>().shared();
-
-	//TODO dynamic buffer
-	private ByteBuffer SHARED_WRITE_BUFFER = ByteBuffer.allocate(2048); 
 	
 	
-	public ServerThread(ClientManager clientManager, PacketHandler packetHandler) throws IOException
+	public ServerThread(ClientManager clientManager) throws IOException
 	{
 		super("ServerThread");	
 		
 		_selector = Selector.open();
 	
 		_clientManager = clientManager;
-		
-		_packetHandler = packetHandler;
 		
 		openServerSocket();		
 		
@@ -149,8 +135,6 @@ public final class ServerThread extends Thread
 			{
 				con = _pendingClose.removeFirst();
 				
-				writeClosePacket(con);
-				
 				closeConnection(con.getSelectionKey(), con);
 			}
 			
@@ -177,246 +161,39 @@ public final class ServerThread extends Thread
 		_log.log(Level.FINEST, "Connection closed");
 		try
 		{
-			// notify connection
-			con.getClient().onDisconnect();
+			con.writePendingPackets();
+			
+			// close the connection socket
+			con.close();
+		}
+		catch (IOException e)
+		{
 		}
 		finally
 		{
-			try
-			{
-				// close the connection socket
-				con.close();
-			}
-			catch (IOException e)
-			{
-			}
-			finally
-			{
-				// clear attachment
-				key.attach(null);
-				// cancel key
-				key.cancel();
-			}
-		}
-	}
-	
-	private void writeClosePacket(ClientConnection con)
-	{
-		if (con.getOutgoingQueue().isEmpty())
-		{
-			return;
-		}
-		
-		SendablePacket packet = null;
-
-		while ((packet = con.getOutgoingQueue().removeFirst()) != null)
-		{
-			SHARED_WRITE_BUFFER.clear();
-			
-			putPacketIntoBuffer(packet, SHARED_WRITE_BUFFER);
-			
-			SHARED_WRITE_BUFFER.flip();
-			
-			try
-			{
-				con.write(SHARED_WRITE_BUFFER);
-			}
-			catch (IOException e)
-			{
-			}
-			// it doesn't matter if the packet was written or not
-			// the connection is going to be closed anyways and we can't afford to wait
+			// clear attachment
+			key.attach(null);
+			// cancel key
+			key.cancel();
 		}
 	}
 
 	private void writePacket(SelectionKey key, ClientConnection con)
 	{
-		//TODO only one packet at a time is written into a buffer
-		
-		if(!prepareWriteBuffer(con))
+		if(!con.writePacket())
 		{
-			key.interestOps(key.interestOps() & ~SelectionKey.OP_WRITE);
-			return;
-		}
-
-		int dataSize = SHARED_WRITE_BUFFER.remaining(); 
-		
-		// write buffer
-		int written = -1;
-		try
-		{			
-			written = con.write(SHARED_WRITE_BUFFER);
-		}
-		catch(IOException e)
-		{
-		}
-		
-		_log.log(Level.FINEST, "written " + written + " out of "+dataSize);
-		
-		if(written >= 0)
-		{			
-			if(written == dataSize)
-			{
-				if(!con.hasPendingOutgoingPackets())
-				{
-					key.interestOps(key.interestOps() & ~SelectionKey.OP_WRITE);
-				}
-			}
-			else
-			{
-				con.copyIntoWriteBuffer(SHARED_WRITE_BUFFER);
-			}
-		}
-		else
-		{
-			con.getClient().onForceDisconnect();
 			closeConnection(key, con);
 		}
-	}
-	
-	private boolean prepareWriteBuffer(ClientConnection con)
-	{
-		if(con.hasPendingWriteBuffer())
-		{
-			con.copyWriteBufferTo(SHARED_WRITE_BUFFER);			
-			return true;
-		}
-		
-		if(con.hasPendingOutgoingPackets())
-		{
-			SendablePacket packet = con.getOutgoingQueue().removeFirst();
-
-			//TODO only one packet can be in the buffer at a time
-			if(packet != null)
-			{	
-				putPacketIntoBuffer(packet, SHARED_WRITE_BUFFER);
-				
-				SHARED_WRITE_BUFFER.flip();				
-				return true;
-			}
-		}
-		return false;
-	}
-	
-	//TODO this could go into SendablePacket
-	private void putPacketIntoBuffer(final SendablePacket packet, final ByteBuffer buffer)
-	{
-		final int headerStart = buffer.position();
-		final int dataStart = headerStart + HEADER_SIZE;
-		
-		// write data
-		buffer.position(dataStart);
-		packet.write(buffer);
-		
-		final int dataLength = buffer.position() - dataStart;
-		
-		// write header
-		buffer.position(headerStart);
-		buffer.putShort((short) dataLength);
-		
-		// encrypt packet data
-		packet.getClient().encryptData(buffer, dataLength);
-		
-		buffer.position(dataStart + dataLength);
 	}
 
 	private void readPacket(SelectionKey key, ClientConnection con)
 	{
 		if(!con.isClosed())
 		{
-			ByteBuffer buffer = con.getReadBuffer();
-			
-			int read = -1;
-			try
+			if(!con.readPacket())
 			{
-				read = con.read(buffer);
-			}
-			catch (IOException e)
-			{
-			}
-			
-			if(read > 0)
-			{
-				buffer.flip();
-				
-				for(int i=0; i < MAX_READ_PER_PASS; i++)
-				{
-					if(!tryReadPacket(key, con, buffer))
-					{
-						return;
-					}
-				}			
-				
-				buffer.compact();
-			}
-			else // an error must have occurred
-			{
-				switch(read)
-				{
-					case 0:
-					case -1:
-						closeConnection(key, con);
-						break;
-						
-					case -2:
-						con.getClient().onForceDisconnect();
-						closeConnection(key, con);
-						break;
-				}
-			}
-		}
-	}
-	
-	private boolean tryReadPacket(SelectionKey key, ClientConnection con, ByteBuffer buffer)
-	{		
-		if(buffer.remaining() == 0) // the buffer is empty
-		{
-			return false; 
-		}
-		else if(buffer.remaining() < HEADER_SIZE) // not enough data for the header
-		{
-			key.interestOps(key.interestOps() | SelectionKey.OP_READ);
-			return false;
-		}
-		else
-		{
-			final int packetSize = buffer.getShort();
-			
-			// TODO dynamic / magical buffer
-			if(packetSize > buffer.capacity() - 2)
-			{
-				_log.log(Level.SEVERE, "The buffer is too small. The connection will be closed");
-				con.getClient().onForceDisconnect();
 				closeConnection(key, con);
-				return false;
 			}
-			
-			if(buffer.remaining() >= packetSize)
-			{
-				// skip packet without body
-				if(packetSize == 0)
-				{
-					return true;
-				}
-				
-				ReceivablePacket packet = _packetHandler.parsePacket(packetSize, buffer, con.getClient());
-
-				if(packet != null)
-				{
-					//TODO this shall be performed by an executor
-					packet.run();
-				}
-				
-				return true;
-			}
-			
-			// read because there isn't enough data
-			key.interestOps(key.interestOps() | SelectionKey.OP_READ);
-			
-			//move the position back before header
-			buffer.position(buffer.position() - HEADER_SIZE);
-			buffer.compact();
-			return false;
 		}
 	}
 

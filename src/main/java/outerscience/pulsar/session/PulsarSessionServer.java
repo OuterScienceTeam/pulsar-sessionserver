@@ -19,8 +19,6 @@ public final class PulsarSessionServer
 	
 	private static ClientManager clientManager;
 	
-	private static PacketHandler packetHandler;
-	
 	public static void main(String[] args)
 	{
 		// set up logging
@@ -58,11 +56,9 @@ public final class PulsarSessionServer
 		
 		clientManager = new ClientManager();
 		
-		packetHandler = new PacketHandler(); 
-		
 		try
 		{
-			listener = new ServerThread(clientManager, packetHandler);
+			listener = new ServerThread(clientManager);
 		}
 		catch(IOException e)
 		{

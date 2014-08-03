@@ -1,18 +1,11 @@
 package outerscience.pulsar.session.network;
 
-import java.nio.ByteBuffer;
-
-import outerscience.pulsar.session.Client;
-
 public abstract class Packet
-{
-	protected Client _client;
+{	
+	protected int _id;
 	
-	protected ByteBuffer _buffer;
-	
-	public Client getClient()
+	public int getId()
 	{
-		return _client;
+		return _id;
 	}
-
 }

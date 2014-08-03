@@ -24,6 +24,10 @@ import outerscience.pulsar.session.ServerThread;
 //TODO javadoc
 public class ClientConnection
 {	
+	private static final int PACKET_HEADER_SIZE = 2;
+	
+	private static final int MAX_READ_PER_PASS = 5;
+	
 	//TODO make the buffers dynamically allocated and recycled
 	//TODO the maximum size of a packet is 2045 bytes + id + 2byte length
 	private final ByteBuffer readBuffer = ByteBuffer.allocate(2048);	
@@ -34,10 +38,6 @@ public class ClientConnection
 	private final ServerThread _server;
 	
 	private final Socket _socket;
-	
-	private final InetAddress _address;
-	
-	private final int _port;
 	
 	private final ReadableByteChannel _readableByteChannel;
 	
@@ -57,10 +57,8 @@ public class ClientConnection
 	{
 		_server = server;
 		_socket = socket;
-		_address = socket.getInetAddress();
 		_readableByteChannel = socket.getChannel();
 		_writableByteChannel = socket.getChannel();
-		_port = socket.getPort();
 		_selectionKey = key;
 		
 		try
@@ -88,22 +86,12 @@ public class ClientConnection
 
 	public InetAddress getAddress()
 	{
-		return _address;
+		return _socket.getInetAddress();
 	}
 	
 	public int getPort()
 	{
-		return _port;
-	}
-
-	public ByteBuffer getReadBuffer()
-	{
-		return readBuffer;
-	}
-	
-	public ByteBuffer getWriteBuffer()
-	{
-		return writeBuffer;
+		return _socket.getPort();
 	}
 	
 	public void setClient(final Client client)
@@ -119,30 +107,32 @@ public class ClientConnection
 		if(closed)
 			return;
 		
-		closed = true;
+		if(_client != null)
+		{
+			_client.onDisconnect();
+		}
+		
+		closed = true;		
 		
 		_socket.close();
+	}
+	
+	public void writePendingPackets()
+	{
+		SendablePacket p = null;
+		while( (p = outgoingQueue.removeFirst()) != null)
+		{
+			putPacketIntoWriteBuffer(p);
+		}
 	}
 
 	public boolean isClosed()
 	{
 		return closed;
-	}
-	
-	public int read(final ByteBuffer buffer) throws IOException
-	{
-		return _readableByteChannel.read(buffer);
-	}
-	
-	public int write(final ByteBuffer buffer) throws IOException
-	{
-		return _writableByteChannel.write(buffer);
-	}
-	
+	}	
 	
 	public void close(SendablePacket closePacket)
 	{
-
 		if(_pendingClose)
 		{
 			return;
@@ -173,45 +163,237 @@ public class ClientConnection
 		}
 		
 		if(packet != null)
-		{
-			packet.setClient(_client);
-			
+		{			
 			outgoingQueue.addLast(packet);
 			
 			_selectionKey.interestOps(_selectionKey.interestOps() | SelectionKey.OP_WRITE);
 		}
 	}
 	
-	public boolean hasPendingOutgoingPackets()
-	{
-		return !outgoingQueue.isEmpty();
-	}
-	
-	public PacketQueue<SendablePacket> getOutgoingQueue()
-	{
-		return outgoingQueue;
-	}
-	
-	public boolean hasPendingWriteBuffer()
+	public boolean hasPendingWiteBuffer()
 	{
 		return writeBuffer.remaining() > 0;
 	}
-
-	public void copyWriteBufferTo(final ByteBuffer destinationBuffer)
+	
+	/**
+	 * Decrypts data in the buffer.
+	 * 
+	 * @param buffer the buffer with the data
+	 * @param dataLength length of the data
+	 */
+	public void decryptData(final ByteBuffer buffer, final int dataLength)
 	{
-		destinationBuffer.clear();
-		
-		destinationBuffer.put(writeBuffer);
-		
-		destinationBuffer.flip();		
+		//TODO decrypt data
 	}
 	
-	public void copyIntoWriteBuffer(final ByteBuffer sourceBuffer)
+	/**
+	 * Encrypts data stored in the buffer.
+	 * 
+	 * @param buffer the buffer with the data
+	 * @param dataLength the length of the data in the buffer
+	 */
+	public void encryptData(final ByteBuffer buffer, final int dataLength)
 	{
-		writeBuffer.clear();
+		//TODO encrypt data
+	}
+	
+
+	/**
+	 * @return false on error, true otherwise
+	 */
+	public boolean readPacket()
+	{
+		int read = -1;
+		try
+		{
+			read = _readableByteChannel.read(readBuffer);
+		}
+		catch (IOException e)
+		{
+		}
 		
-		writeBuffer.put(sourceBuffer);
+		if(read > 0)
+		{
+			readBuffer.flip();
+			
+			for(int i=0; i < MAX_READ_PER_PASS; i++)
+			{
+				int ret = tryReadPacket();
+
+				if(ret == 0)
+					break;
+				else if(ret == -1)
+					return false;
+			}			
+			
+			readBuffer.compact();
+			return true;
+		}
+		else // an error must have occurred
+		{
+			return false;
+		}
+	}
+	
+	/**
+	 * 
+	 * @return 0 if packet was not read
+	 * @return 1 if packet was read
+	 * @return -1 on error
+	 */
+	private int tryReadPacket()
+	{		
+		if(readBuffer.remaining() == 0) // the buffer is empty
+		{
+			return 0; 
+		}
+		else if(readBuffer.remaining() < PACKET_HEADER_SIZE) // not enough data for the header
+		{
+			_selectionKey.interestOps(_selectionKey.interestOps() | SelectionKey.OP_READ);
+			return 0;
+		}
+		else
+		{
+			final int packetSize = readBuffer.getShort();
+			
+			// TODO dynamic / magical buffer
+			if(packetSize > readBuffer.capacity() - 2)
+			{
+				//_log.log(Level.SEVERE, "The buffer is too small. The connection will be closed");
+				return -1;
+			}
+			
+			if(readBuffer.remaining() >= packetSize)
+			{
+				// skip packet without body
+				if(packetSize == 0)
+				{
+					return 1;
+				}
+				
+				ReceivablePacket packet = parsePacket(packetSize);
+
+				if(packet != null)
+				{
+					//TODO this shall be performed by an executor
+					packet.run();
+				}
+				
+				return 1;
+			}
+			
+			// read because there isn't enough data
+			_selectionKey.interestOps(_selectionKey.interestOps() | SelectionKey.OP_READ);
+			
+			//move the position back before header
+			readBuffer.position(readBuffer.position() - PACKET_HEADER_SIZE);
+			readBuffer.compact();
+			return 0;
+		}
+	}
+	
+	private ReceivablePacket parsePacket(int packetSize)
+	{
+		decryptData(readBuffer, packetSize);
 		
+		final int packetId = readBuffer.get() & 0xFF;
+		
+		ReceivablePacket packet = null;
+		
+	//	switch(packetId)
+	//	{
+	//		default: // unknown packet, omit
+	//			return null;
+	//	}
+	//	
+	//	packet.initialize(packetId, this);
+		
+	//	packet.readBuffer(readBuffer);
+		
+		return packet;
+	}
+
+	
+	public boolean writePacket()
+	{
+		if(!prepareWriteBuffer())
+		{
+			_selectionKey.interestOps(_selectionKey.interestOps() & ~SelectionKey.OP_WRITE);
+			return true;
+		}
+
+		int dataSize = writeBuffer.remaining(); 
+		
+		// write buffer
+		int written = -1;
+		try
+		{			
+			written = _writableByteChannel.write(writeBuffer);
+		}
+		catch(IOException e)
+		{
+		}
+		
+		//_log.log(Level.FINEST, "written " + written + " out of "+dataSize);
+		
+		if(written >= 0)
+		{			
+			if(written == dataSize)
+			{
+				if(outgoingQueue.isEmpty())
+				{
+					_selectionKey.interestOps(_selectionKey.interestOps() & ~SelectionKey.OP_WRITE);
+				}
+			}
+			return true;
+		}
+		else
+		{
+			return false;
+		}
+	}
+	
+	private boolean prepareWriteBuffer()
+	{
+		if(writeBuffer.remaining() > 0)
+		{			
+			return true;
+		}
+		
+		if(!outgoingQueue.isEmpty())
+		{
+			SendablePacket packet = outgoingQueue.removeFirst();
+
+			//TODO only one packet can be in the buffer at a time
+			if(packet != null)
+			{	
+				putPacketIntoWriteBuffer(packet);
+				
+				return true;
+			}
+		}
+		return false;
+	}
+	
+	private void putPacketIntoWriteBuffer(SendablePacket packet)
+	{
+		final int headerStart = writeBuffer.position();
+		final int dataStart = headerStart + PACKET_HEADER_SIZE;
+		
+		// write data
+		writeBuffer.position(dataStart);
+		packet.write(writeBuffer);
+		
+		final int dataLength = writeBuffer.position() - dataStart;
+		
+		// write header
+		writeBuffer.position(headerStart);
+		writeBuffer.putShort((short) dataLength);
+		
+		// encrypt packet data
+		encryptData(writeBuffer, dataLength);
+		
+		writeBuffer.position(dataStart + dataLength);
 		writeBuffer.flip();
 	}
 }
