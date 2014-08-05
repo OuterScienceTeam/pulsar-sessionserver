@@ -17,10 +17,10 @@ public abstract class ReceivablePacket extends Packet implements Runnable
 		_connection = connection;
 	}
 	
+	public abstract void readBuffer(ByteBuffer buffer);
+	
 	@Override
 	public abstract void run();
-	
-	public abstract void readBuffer(ByteBuffer buffer);
 	
 	public ClientConnection getConnection()
 	{
