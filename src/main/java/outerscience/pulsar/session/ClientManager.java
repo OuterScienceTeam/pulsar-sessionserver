@@ -5,8 +5,8 @@ import java.util.logging.Level;
 import java.util.logging.Logger;
 
 import outerscience.pulsar.session.network.ClientConnection;
-import outerscience.pulsar.session.network.serverpackets.Disconnect;
-import outerscience.pulsar.session.network.serverpackets.Disconnect.DisconnectReason;
+import outerscience.pulsar.session.network.serverpackets.Packet_006_Disconnect;
+import outerscience.pulsar.session.network.serverpackets.Packet_006_Disconnect.DisconnectReason;
 import javolution.util.FastTable;
 
 //TODO javadoc
@@ -36,7 +36,7 @@ public class ClientManager
 		Iterator<Client> iterator = clients.iterator();
 		while(iterator.hasNext())
 		{
-			iterator.next().getConnection().sendPacket(new Disconnect(DisconnectReason.SERVER_SHUTDOWN));
+			iterator.next().getConnection().sendPacket(new Packet_006_Disconnect(DisconnectReason.SERVER_SHUTDOWN));
 		}
 	}
 }

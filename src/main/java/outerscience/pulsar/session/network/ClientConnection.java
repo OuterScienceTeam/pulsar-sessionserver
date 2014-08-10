@@ -12,6 +12,9 @@ import java.nio.channels.WritableByteChannel;
 
 import outerscience.pulsar.session.Client;
 import outerscience.pulsar.session.ServerThread;
+import outerscience.pulsar.session.network.clientpackets.Packet_002_ClientPublicKey;
+import outerscience.pulsar.session.network.serverpackets.Packet_006_Disconnect;
+import outerscience.pulsar.session.network.serverpackets.Packet_006_Disconnect.DisconnectReason;
 
 
 /**
@@ -23,10 +26,18 @@ import outerscience.pulsar.session.ServerThread;
  */
 //TODO javadoc
 public class ClientConnection
-{	
+{
 	private static final int PACKET_HEADER_SIZE = 2;
 	
 	private static final int MAX_READ_PER_PASS = 5;
+	
+	enum ConnectionStatus
+	{
+		CONNECTED,
+		ENCRYPTED,
+		CLIENT;
+	}
+		
 	
 	//TODO make the buffers dynamically allocated and recycled
 	//TODO the maximum size of a packet is 2045 bytes + id + 2byte length
@@ -51,8 +62,10 @@ public class ClientConnection
 	
 	private boolean _pendingClose = false;
 	
+	private ConnectionStatus status = ConnectionStatus.CONNECTED;
+	
 	private final PacketQueue<SendablePacket> outgoingQueue = new PacketQueue<SendablePacket>();	
-
+	
 	public ClientConnection(final ServerThread server, final Socket socket, final SelectionKey key)
 	{
 		_server = server;
@@ -170,11 +183,6 @@ public class ClientConnection
 		}
 	}
 	
-	public boolean hasPendingWiteBuffer()
-	{
-		return writeBuffer.remaining() > 0;
-	}
-	
 	/**
 	 * Decrypts data in the buffer.
 	 * 
@@ -263,6 +271,7 @@ public class ClientConnection
 				return -1;
 			}
 			
+			// an entire packet was read
 			if(readBuffer.remaining() >= packetSize)
 			{
 				// skip packet without body
@@ -271,13 +280,7 @@ public class ClientConnection
 					return 1;
 				}
 				
-				ReceivablePacket packet = parsePacket(packetSize);
-
-				if(packet != null)
-				{
-					//TODO this shall be performed by an executor
-					packet.run();
-				}
+				parsePacket(packetSize);
 				
 				return 1;
 			}
@@ -292,7 +295,7 @@ public class ClientConnection
 		}
 	}
 	
-	private ReceivablePacket parsePacket(int packetSize)
+	private void parsePacket(int packetSize)
 	{
 		decryptData(readBuffer, packetSize);
 		
@@ -300,17 +303,28 @@ public class ClientConnection
 		
 		ReceivablePacket packet = null;
 		
-	//	switch(packetId)
-	//	{
-	//		default: // unknown packet, omit
-	//			return null;
-	//	}
-	//	
-	//	packet.initialize(packetId, this);
+		switch(packetId)
+		{
+			default: // unknown packet, fail
+				close(new Packet_006_Disconnect(DisconnectReason.PROTOCOL_VIOLATION));
+				return;
+			
+			case 0:
+				// KeepAlive packet is empty
+			break;
+			
+			case 2: //client public key
+				if(status != ConnectionStatus.CONNECTED)
+					close(new Packet_006_Disconnect(DisconnectReason.PROTOCOL_VIOLATION));
+				packet = new Packet_002_ClientPublicKey(); 
+			break;
+		}
 		
-	//	packet.readBuffer(readBuffer);
+		packet.initialize(packetId, this);
 		
-		return packet;
+		packet.readBuffer(readBuffer);
+		
+		packet.run();
 	}
 
 	
