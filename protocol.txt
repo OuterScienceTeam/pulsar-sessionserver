@@ -1,0 +1,65 @@
+
+Establishing a connection / login
+S -> C		HELLO
+	- server version - string
+	- server info - string
+C -> S		client public key K1
+	- public key - byte array
+S -> C		shared key (K) encrypted by K1
+	- shared key - string
+both server and client will now use K to encrypt/decrypt all traffic
+C -> S		LOGIN
+	- username - string
+	- password - string
+S disconnects client with BAD_LOGIN if the login is invalid
+S -> C		WELCOME
+	- current server time in UTC - string
+	- MOTD (if any)	- string
+Now the login sequence is finished.
+
+
+
+Disconnecting
+C -> S client disconnect 
+ - polite disconnect, 12 bytes [e3 83 90 e3 82 a4 e3 83 90 e3 82 a4]
+S should print into the console that the user is rude if the disconnect packet is not sent before disconnect
+Client can now safely close the connection.
+
+
+
+Sending messages
+C -> S		Send Message
+	- message flags? - byte
+	- receiver (username) - string
+	- contents - string
+S stores message into database
+S sends the conversation members MESSAGE NOTIFICATION
+	- sender - string
+	- message id - string
+//If the receivers are not online, they must receive MESSAGE NOTIFICATION once they get online.//
+Message is considered sent
+
+
+Retrieving a received message
+C -> S Message retrieval
+	- messageId - string
+S -> C message with empty fields and flags to 0xFF
+
+S -> C MESSAGE
+	- message id - string
+	- message flags - byte
+	- message date - string
+	- message sender - string
+	- message contents - string
+Message was now retrieved by the client
+
+PACKET IDs
+ 0 keepalive
+1 hello
+ 2 public key 1
+ 3 shared key
+ 4 login
+5 welcome
+6 disconnect
+ 7 client disconnect
+
